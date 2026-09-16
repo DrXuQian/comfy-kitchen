@@ -11,6 +11,7 @@ import torch
 
 import comfy_kitchen as ck
 from comfy_kitchen.backends import ppu
+from ppu_int8_admission import device_limits, resource_reason
 
 
 def row_oracle(x):
@@ -49,6 +50,22 @@ def check():
     torch.manual_seed(819)
     device = torch.device("cuda:0")
     cases = 0
+    limits, admissible, resource_skips = device_limits(ppu.runtime), {}, []
+    for dtype in (torch.float32, torch.float16, torch.bfloat16):
+        admissible[dtype] = []
+        for config, name in enumerate(ppu.configurations()):
+            stats = ppu.resources(config, dtype)
+            reason = resource_reason(stats, limits)
+            if reason:
+                resource_skips.append((config, str(dtype), reason))
+                print(
+                    f"[PPU INT8 admission] config={config} name={name} dtype={dtype} SKIP reason={reason} resources={stats}",
+                    flush=True,
+                )
+            else:
+                admissible[dtype].append((config, name))
+        if not admissible[dtype] or 0 not in [c for c, _ in admissible[dtype]]:
+            raise RuntimeError(f"no admissible config0 control for {dtype}")
     # K=96 and 160 deliberately cross different configs' K-tile boundaries.
     for dtype in (torch.float32, torch.float16, torch.bfloat16):
         for m, n, k in ((1, 1, 32), (17, 35, 96), (65, 129, 160), (129, 257, 256)):
@@ -62,7 +79,7 @@ def check():
                 scales = ws[:1] if scalar else ws
                 b = bias if biased else None
                 expected = oracle(ac, wc, xs, scales, b, dtype)
-                for config, name in enumerate(ppu.configurations()):
+                for config, name in admissible[dtype]:
                     out = ppu.int8_gemm(
                         a,
                         w,
@@ -75,7 +92,7 @@ def check():
                     assert_bits(out, expected)
                     cases += 1
             print(
-                f"[PPU INT8] core shape={m}x{n}x{k} dtype={dtype} all-configs RAW-BIT/PASS",
+                f"[PPU INT8] core shape={m}x{n}x{k} dtype={dtype} admitted-configs={len(admissible[dtype])} RAW-BIT/PASS",
                 flush=True,
             )
     # Pipeline reuse, distinct scales and bias, and a nondefault stream. Inputs
@@ -151,7 +168,9 @@ def check():
             raise AssertionError(f"{label} was silently ignored")
         print(f"[PPU INT8 negative] {label} EXPECTED-RED/PASS")
     digest = hashlib.sha256(results[0].cpu().view(torch.uint8).numpy().tobytes()).hexdigest()
-    print(f"[PPU INT8] PASS core_cases={cases} convrot=INDEPENDENT/PASS fingerprint={digest}")
+    print(
+        f"[PPU INT8] PASS core_cases={cases} resource_SKIPs={len(resource_skips)} convrot=INDEPENDENT/PASS fingerprint={digest}"
+    )
 
 
 if __name__ == "__main__":

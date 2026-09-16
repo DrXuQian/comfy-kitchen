@@ -7,6 +7,9 @@
 #include <vector>
 
 using namespace cute;
+static_assert(int(hggcDevAttrMaxThreadsPerBlock) == 1 &&
+              int(hggcDevAttrMaxSharedMemoryPerBlockOptin) == 97,
+              "Python device-limit attribute IDs differ from this SDK");
 void require(bool value, const char* message) {
   if (!value) throw std::runtime_error(message);
 }
@@ -75,14 +78,16 @@ int main(int argc, char** argv) {
   bool owner=argc>1 && std::string(argv[1])=="--plant-owner";
   bool scale=argc>1 && std::string(argv[1])=="--plant-scale";
   uint64_t cells=0;
+  int configs=0;
   try {
 #define COMFY_PPU_INT8_CONFIG(ID,TM,TN,TK,WM,WN,S) \
+    ++configs; \
     check<float,TM,TN,TK,WM,WN,S>(ID,owner,scale,cells); \
     check<cutlass::half_t,TM,TN,TK,WM,WN,S>(ID,owner,scale,cells); \
     check<cutlass::bfloat16_t,TM,TN,TK,WM,WN,S>(ID,owner,scale,cells);
-#include "comfy_kitchen/backends/ppu/int8_configs.inc"
+#include COMFY_PPU_INT8_CONFIGS
 #undef COMFY_PPU_INT8_CONFIG
-    std::cout << "[PPU host] 6 configs x 3 dtypes; cells=" << cells
+    std::cout << "[PPU host] " << configs << " configs x 3 dtypes; cells=" << cells
               << " actual partition_C+epilogue+Params PASS (NOT device MMA validation)\n";
     return 0;
   } catch (const std::exception& e) {

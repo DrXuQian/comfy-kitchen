@@ -1,5 +1,50 @@
 # PPU INT8 backend
 
+## Expanded INT8 sweep (opt-in, product defaults unchanged)
+
+```bash
+git pull --ff-only
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK JOBS=8 \
+  bash tools/run_ppu_int8_extended_sweep_box.sh
+```
+
+Defaults: `M=N=K=4096`, BF16 output, ConvRot, 1000 dense INT8 TOPS denominator.
+The bounded Cartesian search uses `TileM/TileN/TileK={64,128,256}`,
+`WarpM/WarpN={32,64}`, `Stages={2,3,4}`: **324** raw rows, **285** compile
+candidates, **39** excluded. All exclusions and their coordinates appear in
+`build/generated/int8_config_census.json` and in the output JSON. Reasons are
+CTA >1024 threads or mainloop >256 KiB shared storage (both reasons retained
+when applicable), not guessed performance. This is an expanded search, **not
+every possible legal PPU configuration**; e.g. WarpN128 is outside this pass.
+
+The original six rows retain IDs 0..5. Normal builds still compile only those
+six and retain the same default selector. The expanded build uses the same
+`Int8Config`/mainloop/epilogue with sharded host dispatch: 32 TUs, three output
+dtypes, full link, no per-config mainloop fork. Actual kernel types assert the
+enumerated CTA thread and shared-byte counts. Device memory/register residency
+is checked separately: resource-inadmissible rows print SKIP with the actual
+limits, unexplained API errors and numerical mismatches FAIL. Host ownership
+and scale/bias negative tests can cover the full table using
+`tools/check_ppu_local.py --extended`.
+
+Every device-admitted config gets correctness checks and both core and
+quant+core measurements. These are the existing **public-API aggregate-event**
+measurements, not the Lt comparison's prepared-call timing. Then each role's
+top eight plus legacy config5 are measured again in shuffled interleaved rounds.
+`[PPU INT8 winner]` reports median time, TOPS/utilization, config ID, runner-up
+gap and speedup versus config5 in the same confirmation. Overlapping envelopes
+remain UNRESOLVED (including an unconfirmed candidate overlapping the winner).
+`[PPU INT8 denominator]` explicitly accounts for all 285 candidates. No winner
+is automatically installed as the production default.
+
+Local validation: all 34 compilation units and the real shared-library link
+passed with SDK 2.1.1; loading reports all 285 names/IDs exactly. The full-table
+host proof passed **202,111,692** output checks across three dtypes; duplicate
+owner and incorrect scale negative controls failed as intended. The original
+six-row build/link and **4,144,488** host checks also passed. CPU contracts:
+**77 PASS / 4 environment/device SKIP**. Device correctness/performance of the
+new rows remains for the box script; none is claimed here.
+
 ## Vendor Lt comparison (benchmark only)
 
 On PPU, the vendor Lt library is SDK `libacblasLt.so` / `acblasLtMatmul`,

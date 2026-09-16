@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 import torch
 from comfy_kitchen.backends import ppu
 from ppu_int8_check import assert_bits, oracle
+from ppu_int8_admission import device_limits, resource_reason
 
 
 def measure(fn, warmup, samples, iterations):
@@ -51,13 +52,23 @@ def main():
     p.add_argument("--samples", type=int, default=7)
     p.add_argument("--iterations", type=int, default=20)
     p.add_argument(
+        "--confirm-top",
+        type=int,
+        default=0,
+        help="Fresh interleaved confirmation of top N plus legacy config5, per role",
+    )
+    p.add_argument(
         "--peak-tops", type=float, help="Optional calibrated INT8 peak (not fp16 TFLOPS)"
     )
     p.add_argument("--out", default="/workspace/comfy-kitchen-ppu-sweep")
     args = p.parse_args()
     if min(args.m, args.n, args.k, args.samples, args.iterations) <= 0:
         p.error("extents/samples/iterations must be positive")
-    if args.warmup < 0 or (args.peak_tops is not None and args.peak_tops <= 0):
+    if (
+        args.warmup < 0
+        or args.confirm_top < 0
+        or (args.peak_tops is not None and args.peak_tops <= 0)
+    ):
         p.error("warmup must be nonnegative and peak TOPS positive")
     if not ppu.runtime.is_ppu_device("cuda:0"):
         raise RuntimeError("PPU required; no performance result")
@@ -104,9 +115,44 @@ def main():
         "timing": "aggregate device events; includes launch idle",
         "correctness": "sampled independent int64 + all-output raw equality vs config0 (run smoke first)",
     }
-    results = []
+    results, skips, confirmations = [], [], []
+    limits = device_limits(ppu.runtime)
+    metadata["device_limits"] = limits
+    metadata["candidate_count"] = len(names)
+    manifest_path = ppu.runtime.library_path().with_suffix(".so.json")
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text())
+        if manifest["binary_sha256"] != metadata["binary_sha256"]:
+            raise RuntimeError("build manifest does not bind the loaded binary")
+        metadata["config_census"] = manifest.get("config_census")
+
+    def save(complete=False, winners=None):
+        result_path.write_text(
+            json.dumps(
+                {
+                    "metadata": metadata,
+                    "results": results,
+                    "skips": skips,
+                    "confirmations": confirmations,
+                    "complete": complete,
+                    "winners": winners or {},
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+
+    save()
     anchor = ppu.int8_gemm(q, w, xs, ws, bias, dtype, config=0)
     for config in order:
+        resources = ppu.resources(config, dtype)
+        reason = resource_reason(resources, limits)
+        if reason:
+            skipped = {"config": config, "name": names[config], "reason": reason, **resources}
+            skips.append(skipped)
+            print("[PPU INT8 SKIP] " + json.dumps(skipped), flush=True)
+            save()
+            continue
         os.environ["COMFY_KITCHEN_PPU_INT8_CONFIG"] = str(config)
         core = lambda: ppu.int8_gemm(q, w, xs, ws, bias, dtype, config=config)
         e2e = lambda: ppu.int8_linear(x, w, ws, bias, dtype, convrot=args.convrot)
@@ -123,36 +169,93 @@ def main():
                 "role": role,
                 **stats,
                 "logical_tops": tops,
-                **ppu.resources(config, dtype),
+                **resources,
             }
             if args.peak_tops:
                 row["utilization_pct"] = 100 * tops / args.peak_tops
             results.append(row)
             print("[PPU INT8 sweep] " + json.dumps(row), flush=True)
-            result_path.write_text(
-                json.dumps({"metadata": metadata, "results": results, "complete": False}, indent=2)
-                + "\n"
-            )
+            save()
+    if len(results) // 2 + len(skips) != len(names):
+        raise RuntimeError("candidate denominator is incomplete")
+    if len(results) < 4:
+        raise RuntimeError("fewer than two admissible candidates; no winner comparison")
+    if args.confirm_top:
+        rng = random.Random(1901)
+        for role in ("prequantized-core", "quant+core"):
+            ranked = sorted((r for r in results if r["role"] == role), key=lambda r: r["median_us"])
+            selected = ranked[: args.confirm_top]
+            control = next((r for r in ranked if r["config"] == 5), None)
+            if control is not None and control not in selected:
+                selected.append(control)
+            if len(selected) < 2:
+                raise RuntimeError("confirmation needs at least two configs")
+            timings = {r["config"]: [] for r in selected}
+            for round_id in range(args.samples):
+                configs = list(timings)
+                rng.shuffle(configs)
+                for config in configs:
+                    os.environ["COMFY_KITCHEN_PPU_INT8_CONFIG"] = str(config)
+                    fn = (
+                        (lambda: ppu.int8_gemm(q, w, xs, ws, bias, dtype, config=config))
+                        if role == "prequantized-core"
+                        else (lambda: ppu.int8_linear(x, w, ws, bias, dtype, convrot=args.convrot))
+                    )
+                    stats, last = measure(fn, args.warmup, 1, args.iterations)
+                    assert_bits(last, anchor)
+                    timings[config].extend(stats["samples_us"])
+                print(
+                    f"[PPU INT8 confirm] role={role} round={round_id+1}/{args.samples} candidates={len(configs)}",
+                    flush=True,
+                )
+            for original in selected:
+                values = timings[original["config"]]
+                median = statistics.median(values)
+                row = {
+                    **original,
+                    "median_us": median,
+                    "min_us": min(values),
+                    "max_us": max(values),
+                    "samples_us": values,
+                    "logical_tops": 2 * args.m * args.n * args.k / median / 1e6,
+                }
+                if args.peak_tops:
+                    row["utilization_pct"] = 100 * row["logical_tops"] / args.peak_tops
+                confirmations.append(row)
+                print("[PPU INT8 confirmed] " + json.dumps(row), flush=True)
+                save()
     winners = {}
     for role in ("prequantized-core", "quant+core"):
-        ranked = sorted((r for r in results if r["role"] == role), key=lambda r: r["median_us"])
+        authority = confirmations if args.confirm_top else results
+        ranked = sorted((r for r in authority if r["role"] == role), key=lambda r: r["median_us"])
         a, b = ranked[:2]
         # Conservative envelope test, fixed before data: overlapping envelopes
         # cannot establish a unique winner even if medians differ.
-        resolved = a["max_us"] < b["min_us"]
+        confirmed_ids = {r["config"] for r in ranked}
+        outside = [r for r in results if r["role"] == role and r["config"] not in confirmed_ids]
+        competitors = ranked[1:] + outside
+        resolved = all(a["max_us"] < r["min_us"] for r in competitors)
         winners[role] = {
+            "best_config": a["config"],
+            "median_us": a["median_us"],
+            "logical_tops": a["logical_tops"],
             "best": a["name"],
             "runner_up": b["name"],
             "gap_us": b["median_us"] - a["median_us"],
             "verdict": "RESOLVED" if resolved else "UNRESOLVED",
+            "binding": "all-screened+top-confirmed" if args.confirm_top else "screening-only",
         }
+        if args.peak_tops:
+            winners[role]["utilization_pct"] = a["utilization_pct"]
+        control = next((r for r in ranked if r["config"] == 5), None)
+        if control:
+            winners[role]["legacy_config5_median_us"] = control["median_us"]
+            winners[role]["speedup_vs_legacy5"] = control["median_us"] / a["median_us"]
         print("[PPU INT8 winner] " + role + " " + json.dumps(winners[role]), flush=True)
-    result_path.write_text(
-        json.dumps(
-            {"metadata": metadata, "results": results, "complete": True, "winners": winners},
-            indent=2,
-        )
-        + "\n"
+    save(complete=True, winners=winners)
+    print(
+        f"[PPU INT8 denominator] candidates={len(names)} measured={len(results)//2} resource_SKIP={len(skips)} FAIL=0",
+        flush=True,
     )
     print(f"artifacts: {result_path}")
 

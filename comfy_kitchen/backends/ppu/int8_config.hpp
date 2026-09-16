@@ -4,6 +4,12 @@
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "int8_epilogue.hpp"
 
+// Product builds keep the admitted six rows. The explicit sweep build supplies
+// one generated table, shared by dispatch, names, counts and host ownership.
+#ifndef COMFY_PPU_INT8_CONFIGS
+#define COMFY_PPU_INT8_CONFIGS "int8_configs.inc"
+#endif
+
 namespace comfy::ppu {
 // Single type authority shared with the host ownership/epilogue proof.
 template<class Output, int TM, int TN, int TK, int WM, int WN, int Stages>

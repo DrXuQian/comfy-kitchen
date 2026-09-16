@@ -1,57 +1,47 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "int8_config.hpp"
+#include "int8_dispatch.hpp"
 
 #include <limits>
 #include <stdexcept>
 #include <string>
 
+#ifdef COMFY_PPU_INT8_SHARDED
+#include "int8_shard_dispatch.inc"
+#endif
+
 namespace {
 thread_local std::string last_error;
 
-template<class Output, int TM, int TN, int TK, int WM, int WN, int Stages>
-struct Int8Gemm : comfy::ppu::Int8Config<Output, TM, TN, TK, WM, WN, Stages> {
-  using Config = comfy::ppu::Int8Config<Output, TM, TN, TK, WM, WN, Stages>;
-  using Kernel = typename Config::Kernel;
-  using Gemm = typename Config::Gemm;
-  static void run(const ComfyPpuInt8Args& a, hggcStream_t stream) {
-    auto args = Config::arguments(a);
-    auto status = Gemm::can_implement(args);
-    if (status != cutlass::Status::kSuccess)
-      throw std::runtime_error("actlize cannot implement this INT8 shape/layout");
-    Gemm op;
-    status = op(args, nullptr, stream);
-    if (status != cutlass::Status::kSuccess)
-      throw std::runtime_error("actlize INT8 GEMM launch failed: " + std::to_string(int(status)));
-  }
-};
-
+#ifndef COMFY_PPU_INT8_SHARDED
 template<class Output>
 int dispatch(int id, const ComfyPpuInt8Args* args, void* stream,
              int* threads = nullptr, int* smem = nullptr, int* occupancy = nullptr) {
   switch (id) {
 #define COMFY_PPU_INT8_CONFIG(ID, TM, TN, TK, WM, WN, STAGES) \
-    case ID: { \
-      using Config = Int8Gemm<Output, TM, TN, TK, WM, WN, STAGES>; \
-      if (args) Config::run(*args, reinterpret_cast<hggcStream_t>(stream)); \
-      if (threads) *threads = Config::Kernel::MaxThreadsPerBlock; \
-      if (smem) *smem = Config::Kernel::SharedStorageSize; \
-      if (occupancy) *occupancy = Config::Gemm::maximum_active_blocks(); \
-      return 0; \
-    }
-#include "int8_configs.inc"
+    case ID: return comfy::ppu::run_int8_config<Output, TM, TN, TK, WM, WN, STAGES>( \
+        args, stream, threads, smem, occupancy);
+#include COMFY_PPU_INT8_CONFIGS
 #undef COMFY_PPU_INT8_CONFIG
     default: throw std::invalid_argument("unknown PPU INT8 config");
   }
 }
+#endif
 
 int dispatch_dtype(int dtype, int config, const ComfyPpuInt8Args* args, void* stream,
                    int* threads = nullptr, int* smem = nullptr, int* occupancy = nullptr) {
+#ifdef COMFY_PPU_INT8_SHARDED
+  if (config < 0 || config >= comfy_ppu_int8_config_count())
+    throw std::invalid_argument("unknown PPU INT8 config");
+  return comfy_ppu_int8_shards[config / COMFY_PPU_INT8_SHARD_ROWS](
+      dtype, config, args, stream, threads, smem, occupancy);
+#else
   switch (dtype) {
     case 0: return dispatch<float>(config, args, stream, threads, smem, occupancy);
     case 1: return dispatch<cutlass::half_t>(config, args, stream, threads, smem, occupancy);
     case 2: return dispatch<cutlass::bfloat16_t>(config, args, stream, threads, smem, occupancy);
     default: throw std::invalid_argument("PPU INT8 output dtype must be fp32/fp16/bf16");
   }
+#endif
 }
 }  // namespace
 
@@ -61,7 +51,7 @@ extern "C" void comfy_ppu_set_error(const char* text) { last_error = text; }
 extern "C" int comfy_ppu_int8_config_count() {
   int count = 0;
 #define COMFY_PPU_INT8_CONFIG(...) ++count;
-#include "int8_configs.inc"
+#include COMFY_PPU_INT8_CONFIGS
 #undef COMFY_PPU_INT8_CONFIG
   return count;
 }
@@ -69,7 +59,7 @@ extern "C" const char* comfy_ppu_int8_config_name(int id) {
   switch (id) {
 #define COMFY_PPU_INT8_CONFIG(ID, TM, TN, TK, WM, WN, STAGES) \
     case ID: return #TM "x" #TN "x" #TK "_w" #WM "x" #WN "_s" #STAGES;
-#include "int8_configs.inc"
+#include COMFY_PPU_INT8_CONFIGS
 #undef COMFY_PPU_INT8_CONFIG
     default: return nullptr;
   }
