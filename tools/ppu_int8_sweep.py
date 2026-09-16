@@ -49,6 +49,7 @@ def main():
     p.add_argument("--k", type=int, required=True)
     p.add_argument("--dtype", choices=("bf16", "fp16", "fp32"), default="bf16")
     p.add_argument("--convrot", action="store_true")
+    p.add_argument("--bias", choices=("vector", "none"), default="vector")
     p.add_argument("--warmup", type=int, default=5)
     p.add_argument("--samples", type=int, default=7)
     p.add_argument("--iterations", type=int, default=20)
@@ -115,7 +116,11 @@ def main():
     x = torch.randint(-8, 9, (args.m, args.k), device="cuda").to(dtype) / 8
     w = torch.randint(-8, 9, (args.n, args.k), device="cuda", dtype=torch.int8)
     ws = (torch.arange(args.n, device="cuda") % 11 + 1).float() / 64
-    bias = ((torch.arange(args.n, device="cuda") % 7 - 3).float() / 16).to(dtype)
+    bias = (
+        ((torch.arange(args.n, device="cuda") % 7 - 3).float() / 16).to(dtype)
+        if args.bias == "vector"
+        else None
+    )
     q, xs = ppu._quantize(x, convrot=args.convrot)
     rows = torch.linspace(0, args.m - 1, min(4, args.m)).long()
     cols = torch.linspace(0, args.n - 1, min(17, args.n)).long()
@@ -124,7 +129,7 @@ def main():
         w[cols.to(w.device)],
         xs[rows.to(xs.device)],
         ws[cols.to(ws.device)],
-        bias[cols.to(bias.device)],
+        None if bias is None else bias[cols.to(bias.device)],
         dtype,
     )
     order = list(range(len(names)))

@@ -29,6 +29,7 @@ def result_fixture():
         "confirm_iterations": 20,
         "confirm_top": 8,
         "peak_tops": 1000.0,
+        "bias": "vector",
     }
     rows = [
         {"config": r["id"], "name": suite.config_name(r), "role": role}
@@ -87,6 +88,32 @@ def test_plan_separates_m_n_k_and_has_a_large_tail():
         for n, k in ((8192, 4096), (4096, 8192), (8192, 8192), (16384, 4096), (4096, 16384))
     }.issubset(shapes)
     assert 73774 % 256 != 0
+
+
+def test_h3_geometry_uses_hidden_not_attention_width_for_the_residual_stream():
+    assert suite.minimax_h3_shapes(73774) == (
+        (73774, 21504, 5376),
+        (73774, 5376, 7168),
+        (73774, 28672, 5376),
+        (73774, 5376, 14336),
+    )
+    assert all(shape[2] % 256 == 0 for shape in suite.minimax_h3_shapes(73774))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools/ppu_int8_shape_suite.py"),
+            "--dry-run",
+            "--suite",
+            "minimax-h3",
+            "--tokens",
+            "16384",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "M=16384 N=21504 K=5376" in result.stdout
+    assert "bias=none" in result.stdout
 
 
 def test_complete_sweep_and_unresolved_are_distinct():

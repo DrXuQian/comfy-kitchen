@@ -36,6 +36,18 @@ CONTROL_NAMES = (
 )
 
 
+def minimax_h3_shapes(tokens):
+    # Official FL2VA config: hidden=5376, heads*head_dim=56*128,
+    # ffn=14336. ComfyUI fuses Q/K/V and gate/up, respectively.
+    hidden, attention, ffn = 5376, 56 * 128, 14336
+    return (
+        (tokens, 3 * attention, hidden),
+        (tokens, hidden, attention),
+        (tokens, 2 * ffn, hidden),
+        (tokens, hidden, ffn),
+    )
+
+
 def shape_arg(text):
     try:
         values = tuple(int(v) for v in text.lower().replace("x", ",").split(","))
@@ -148,8 +160,8 @@ def write_summary(outdir, summary):
         f"Completed {len(summary['runs'])}/{len(summary['shapes'])}; "
         f"complete={summary['complete']}. No selector was changed.",
         "",
-        "Synthetic heuristic probes, not verified MiniMax layer dimensions. "
-        "BF16, ConvRot, warm/reused allocations; public-API aggregate events.",
+        f"Scope: {summary['scope']}. BF16, ConvRot, warm/reused allocations; "
+        "public-API aggregate events. Activation functions are not timed.",
         "",
         "| M,N,K | Role | Best | us | TOPS | % of declared INT8 peak | "
         "Runner-up gap (us) | Verdict | config1 / best | cube winner / best |",
@@ -185,7 +197,14 @@ def write_summary(outdir, summary):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--library", default=os.environ.get("COMFY_KITCHEN_PPU_LIBRARY"))
-    parser.add_argument("--shapes", nargs="+", type=shape_arg, default=DEFAULT_SHAPES)
+    parser.add_argument("--shapes", nargs="+", type=shape_arg)
+    parser.add_argument("--suite", choices=("probe", "minimax-h3"), default="probe")
+    parser.add_argument(
+        "--tokens", type=int, default=73774, help="Packed tokens for --suite minimax-h3"
+    )
+    parser.add_argument(
+        "--bias", choices=("vector", "none"), help="Default: none for H3, vector for probes"
+    )
     parser.add_argument("--samples", type=int, default=3, help="Full-table screening samples")
     parser.add_argument("--iterations", type=int, default=3, help="Launches per screening sample")
     parser.add_argument("--confirm-samples", type=int, default=7)
@@ -199,6 +218,18 @@ def main():
         help="Print plan without importing torch or loading a GPU library",
     )
     args = parser.parse_args()
+    if args.shapes is not None and args.suite != "probe":
+        parser.error("custom --shapes and --suite minimax-h3 are mutually exclusive")
+    if args.tokens <= 0:
+        parser.error("--tokens must be positive")
+    scope = "synthetic-large-M-heuristic-probes-not-model-inventory"
+    if args.suite == "minimax-h3":
+        args.shapes = minimax_h3_shapes(args.tokens)
+        scope = "MiniMax-H3-ComfyUI-fused-QKV-out-FFN-up-down; activation-functions-excluded"
+    elif args.shapes is None:
+        args.shapes = DEFAULT_SHAPES
+    if args.bias is None:
+        args.bias = "none" if args.suite == "minimax-h3" else "vector"
     if len(set(args.shapes)) != len(args.shapes):
         parser.error("duplicate shapes")
     if (
@@ -214,7 +245,8 @@ def main():
     ):
         parser.error("sample/iteration/confirmation counts and peak must be positive")
     print(
-        "[PPU shape suite] synthetic probes; fixed BF16 + ConvRot; no selector change", flush=True
+        f"[PPU shape suite] {scope}; BF16 + ConvRot bias={args.bias}; no selector change",
+        flush=True,
     )
     for i, (m, n, k) in enumerate(args.shapes, 1):
         print(
@@ -248,11 +280,12 @@ def main():
             "confirm_iterations",
             "confirm_top",
             "peak_tops",
+            "bias",
         )
     }
     summary = {
         "schema": 1,
-        "scope": "synthetic-large-M-heuristic-probes-not-model-inventory",
+        "scope": scope,
         "source_sha": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip(),

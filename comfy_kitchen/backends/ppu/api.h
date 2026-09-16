@@ -28,6 +28,8 @@ const char* comfy_ppu_last_error();
 int comfy_ppu_int8_gemm(const ComfyPpuInt8Args*, void* stream);
 int comfy_ppu_int8_config_count();
 const char* comfy_ppu_int8_config_name(int config);
+// Host-only policy query; returns -1 with last_error on invalid arguments.
+int comfy_ppu_int8_select_config(int64_t m, int64_t n, int64_t k, int dtype);
 int comfy_ppu_int8_resources(int config, int dtype, int* threads, int* smem, int* occupancy);
 int comfy_ppu_quantize_int8(const void* x, int8_t* q, float* scales,
                           int64_t m, int64_t k, int dtype, int convrot,

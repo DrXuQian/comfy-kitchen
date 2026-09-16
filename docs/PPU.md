@@ -1,12 +1,98 @@
 # PPU INT8 backend
 
+## Automatic selector and fallback
+
+The PPU **product library now contains seven configs**. The original IDs 0..5
+are unchanged; product ID6 is `64x256x128_w64x32_s2`, which is ID94 in the
+unchanged 285-row expanded sweep. Use **coordinate names** when moving an
+override between these libraries, not a sweep-local integer ID.
+
+The actual native C++ selector is shared by `int8_gemm`, `int8_linear`, and
+direct C ABI calls with `config=-1`:
+
+| Condition | Automatic selection |
+|---|---|
+| M < 128 | `64x128x64_w32x64_s3` (ID0) |
+| BF16 output, M/N/K >=4096, K <8192 | `64x256x128_w64x32_s2` (product ID6 / sweep ID94) |
+| BF16 output, M/N/K >=4096, K >=8192 | `128x256x128_w64x64_s2` (ID5) |
+| Other shapes or output dtypes | `128x128x64_w64x64_s3` (ID1) |
+
+This is a **shape-family fallback**, not an eight-shape whitelist. For example,
+unmeasured `8192x7168x6144` selects the balanced fallback; `16384x7168x14336`
+selects the long-K fallback. It never launches a hidden sweep. Unknown geometry
+within the API contract still gets a defined selection; malformed inputs and
+missing compiled candidates fail instead of silently switching backends.
+
+Precedence: explicit `config=` argument > `COMFY_KITCHEN_PPU_INT8_CONFIG` > native
+automatic policy. Both explicit controls accept an integer ID or full coordinate
+name; explicit `config=-1` means auto even if the environment has an override.
+
+```python
+from comfy_kitchen.backends import ppu
+index = ppu.select_config(73774, 21504, 5376)
+print(index, ppu.configurations()[index])
+```
+
+```bash
+export COMFY_KITCHEN_PPU_INT8_CONFIG=64x256x128_w64x32_s2
+```
+
+Calibration is BF16/ConvRot on a 72-CU PPU-ZW810, not a guarantee for every PPU or
+unmeasured shape. The returned eight-shape bundle contains 4560 screening rows,
+171 fresh confirmations and no resource SKIPs. All 16 unique-winner verdicts
+remain **UNRESOLVED**. Nevertheless, this conservative two-choice policy beats
+the previous ID1 quant+core fallback on all eight shapes, with disjoint sample
+envelopes and **17.6%-32.3% median latency reductions**. This supports a better
+fallback, not a claim of universal optimality. Three long-K shapes favor ID5
+over ID94 in quant+core by 2.7%-4.6%, also with disjoint envelopes.
+
+Small M, compact matrices and FP16/FP32 output retain their previous choices
+because this performance experiment did not establish a better fallback there.
+The selector changes host dispatch only: quantization, layouts, the GEMM mainloop,
+and fused scale/bias arithmetic are unchanged. A newly built wheel still needs
+its installation/device smoke; earlier measurements do not constitute a run of
+that new wheel. An old native library without the selector query can still run
+explicit sweep configs, but automatic use fails with an actionable upgrade error.
+
+## MiniMax H3 main linear shapes
+
+The [official FL2VA config](https://github.com/MiniMax-AI/MiniMax-H3/blob/main/FL2VA/transformer/config.json)
+uses hidden width **5376**, attention width **56*128=7168**, FFN width **14336**,
+and 50 main blocks. With [ComfyUI's fused QKV and gate/up layers](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy/ldm/minimax/model.py),
+the four main GEMM shapes at packed sequence length 73774 are:
+
+| Layer | M | N | K |
+|---|---:|---:|---:|
+| Fused QKV | 73774 | 21504 | 5376 |
+| Attention output | 73774 | 5376 | 7168 |
+| Fused FFN gate/up | 73774 | 28672 | 5376 |
+| FFN down | 73774 | 5376 | 14336 |
+
+These are derived operator dimensions, **not new PPU performance measurements**.
+The earlier synthetic eight-shape sweep did not hit these N/K pairs. M changes
+with packed text/audio/video/reference tokens; chunked FFN changes its M but not
+N/K. AdaLN, token refiners and the separate text encoder are outside this four-row
+main-block set.
+
+Reuse the expanded binary with `--suite minimax-h3` (optionally `--tokens 16384`):
+
+```bash
+COMFY_KITCHEN_PPU_LIBRARY=/workspace/<expanded-run>/_native.so \
+  bash tools/run_ppu_int8_shape_sweep_box.sh --suite minimax-h3
+```
+
+This uses bias=None, matching those four ComfyUI linear layers. Core and
+quant+core remain separate; SwiGLU and other surrounding activations are **not**
+timed. The same all-candidate coverage, full byte checks, fresh controls and
+UNRESOLVED rule apply. Do not label it full-model end-to-end timing.
+
 ## Multi-shape heuristic experiment (reuse the expanded binary)
 
 The 4096-cube expanded sweep admitted `64x256x128_w64x32_s2` on the user's
 72-CU PPU: core **208.960 us / 657.729 TOPS / 65.77%** of the declared
 1000 INT8 TOPS peak; quant+core **289.366 us**. Both fresh-confirmation winners
 were resolved in that 285-row space. This does **not** establish a global
-fallback for all shapes. Product defaults remain unchanged pending this experiment.
+fallback for all shapes. The conservative automatic policy is documented above.
 
 Run eight controlled shapes without recompiling the library:
 
@@ -73,7 +159,7 @@ occupancy changes, and retain unresolved ties. A future heuristic needs held-out
 shapes before claiming generalization; unknown shapes keep a documented safe
 fallback rather than running an undisclosed full sweep on ComfyUI's first frame.
 
-## Expanded INT8 sweep (opt-in, product defaults unchanged)
+## Expanded INT8 sweep (opt-in)
 
 ```bash
 git pull --ff-only
@@ -90,8 +176,9 @@ CTA >1024 threads or mainloop >256 KiB shared storage (both reasons retained
 when applicable), not guessed performance. This is an expanded search, **not
 every possible legal PPU configuration**; e.g. WarpN128 is outside this pass.
 
-The original six rows retain IDs 0..5. Normal builds still compile only those
-six and retain the same default selector. The expanded build uses the same
+The original six rows retain IDs 0..5 in both builds. Normal builds add the
+balanced prefill fallback as ID6; expanded sweep IDs stay unchanged (it is ID94).
+The expanded build uses the same
 `Int8Config`/mainloop/epilogue with sharded host dispatch: 32 TUs, three output
 dtypes, full link, no per-config mainloop fork. Actual kernel types assert the
 enumerated CTA thread and shared-byte counts. Device memory/register residency
@@ -195,9 +282,9 @@ and K divisible by 256; very large rows may exceed device shared memory and are
 explicitly rejected by the SDK, not silently changed. No FP8/FP4/attention port,
 no split-K or persistent scheduling, no M=1-specialized GEMV in this first version.
 
-Six independently selectable tile/warp/stage configurations live in
-`ppu/int8_configs.inc`. Defaults (ID 0 below M128, ID 1 otherwise) are **starting
-points, not measured PPU winners**. The sweep prints every config's actual
+Seven independently selectable tile/warp/stage configurations live in
+`ppu/int8_configs.inc`; the selector above uses measured prefill fallbacks.
+The sweep prints every config's actual
 threads/shared memory/occupancy and both prequantized core and quant+core timing.
 
 `third_party/actlize` tracks `ppu-w4a16-dev` and is pinned by the gitlink.
@@ -216,10 +303,11 @@ git submodule update --init third_party/actlize
 PPU_SDK=/usr/local/PPU_SDK bash tools/run_ppu_int8_box.sh
 ```
 
-This compiles locally on that box, checks all 6 configs x 3 output dtypes, tails,
+This compiles locally on that box, checks all 7 configs x 3 output dtypes, tails,
 independent INT64 GEMM reference, row/column scales, bias, public dispatch,
 nondefault stream, eight repeats, fixed stochastic seed, and both ConvRot paths.
-No downloading/building NVIDIA CUTLASS or FlashAttention is involved. Output goes
+It also checks automatic-vs-explicit selection on balanced, long-K and unmeasured
+tail shapes. No downloading/building NVIDIA CUTLASS or FlashAttention is involved. Output goes
 under `/workspace/`; the script does not install or overwrite an existing package.
 
 To install for ComfyUI after device admission:
@@ -248,7 +336,7 @@ not establish all three dimensions. Kernels run sequentially on one stream.
 The script uses warm/reused weights, aggregate events (including launch idle),
 records raw samples + SHA + binary hash + device/runtime, and refuses to call
 overlapping best/runner-up timing envelopes a resolved winner. This initial
-six-config space is finite and explicit, **not an exhaustive optimization space**.
+product config space is finite and explicit, **not an exhaustive optimization space**.
 Do not compare core-only numbers to a quantization-inclusive baseline.
 
 After finding a candidate, set `COMFY_KITCHEN_PPU_INT8_CONFIG=<ID>` in the

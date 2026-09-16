@@ -7,7 +7,6 @@ never caught and retried using an unrelated backend.
 
 import ctypes as C
 import math
-import os
 import sys
 
 import torch
@@ -17,7 +16,7 @@ from comfy_kitchen.constraints import FunctionConstraints, ValidationResult
 from comfy_kitchen.registry import registry
 
 from . import runtime
-from .runtime import configurations, resources  # noqa: F401
+from .runtime import configurations, resources, select_config  # noqa: F401
 
 
 def _require_ppu(tensor):
@@ -97,8 +96,7 @@ def int8_gemm(
     """Prequantized core. Config IDs are listed by configurations(); no hidden sweep."""
     _require_ppu(a)
     _gemm_contract(a, weight, x_scale, weight_scale, bias, out_dtype)
-    if config is None:
-        config = int(os.environ.get("COMFY_KITCHEN_PPU_INT8_CONFIG", "-1"))
+    config = runtime.resolve_config(config, a.shape[0], weight.shape[0], a.shape[1], out_dtype)
     with torch.cuda.device(a.device):
         a, weight = a.contiguous(), weight.contiguous()
         # A contiguous storage-offset view may still be misaligned for AIU.

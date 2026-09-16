@@ -17,15 +17,25 @@ AXES = {
 SHARD_ROWS = 9
 
 
-def legacy_rows():
+def product_rows():
     text = (ROOT / "comfy_kitchen/backends/ppu/int8_configs.inc").read_text()
     parsed = [
         tuple(map(int, re.findall(r"\d+", values)))
         for values in re.findall(r"^COMFY_PPU_INT8_CONFIG\(([^)]+)\)", text, re.M)
     ]
-    if [r[0] for r in parsed] != list(range(6)) or any(len(r) != 7 for r in parsed):
-        raise ValueError("legacy IDs/row arity changed; review compatibility explicitly")
+    if (
+        len(parsed) < 6
+        or [r[0] for r in parsed] != list(range(len(parsed)))
+        or any(len(r) != 7 for r in parsed)
+    ):
+        raise ValueError("product IDs/row arity changed; review compatibility explicitly")
     return [r[1:] for r in parsed]
+
+
+def legacy_rows():
+    # Only the original six reserve IDs in the expanded table. Appending a
+    # product candidate must not renumber the 285 already-measured sweep IDs.
+    return product_rows()[:6]
 
 
 def classify(row):
@@ -49,8 +59,8 @@ def census():
         else:
             accepted.append(row)
     old = legacy_rows()
-    if any(row not in accepted for row in old):
-        raise ValueError("sweep space lost an admitted legacy row")
+    if any(row not in accepted for row in product_rows()):
+        raise ValueError("sweep space lost an admitted product row")
     ordered = old + [r for r in accepted if r not in old]
     data = {
         "axes": AXES,
@@ -107,7 +117,7 @@ def generate(directory):
         for row in data["accepted"][start : start + SHARD_ROWS]:
             template = ", ".join(str(row[k]) for k in AXES)
             cases += (
-                f'case {row["id"]}: return comfy::ppu::run_int8_config<Output, {template}>'
+                f"case {row['id']}: return comfy::ppu::run_int8_config<Output, {template}>"
                 "(args, stream, threads, smem, occ);\n"
             )
         source = directory / f"int8_shard_{index:02d}.cu"

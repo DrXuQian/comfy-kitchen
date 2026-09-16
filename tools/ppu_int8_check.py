@@ -123,6 +123,28 @@ def check():
     for result in results:
         assert_bits(result, want)
     print("[PPU INT8] public-dispatch + nondefault-stream + reuse=8/8 RAW-BIT/PASS", flush=True)
+    # Exercise automatic selection, including an unmeasured shape inside the
+    # family. Explicit compact controls remain independent of the new policy.
+    for m, n, k in ((4096, 4096, 4096), (4096, 4096, 8192), (4097, 4128, 4128)):
+        a = torch.randint(-4, 5, (m, k), device=device, dtype=torch.int8)
+        w = torch.randint(-4, 5, (n, k), device=device, dtype=torch.int8)
+        xs = ((torch.arange(m, device=device) % 7 + 1).float() / 32)[:, None]
+        ws = (torch.arange(n, device=device) % 11 + 1).float() / 64
+        bias = ((torch.arange(n, device=device) % 5 - 2).float() / 16).bfloat16()
+        selected = ppu.select_config(m, n, k)
+        auto = ppu.int8_gemm(a, w, xs, ws, bias, config=-1)
+        assert_bits(auto, ppu.int8_gemm(a, w, xs, ws, bias, config=1))
+        assert_bits(auto, ppu.int8_gemm(a, w, xs, ws, bias, config=selected))
+        assert_bits(
+            auto[-4:, -17:], oracle(a[-4:], w[-17:], xs[-4:], ws[-17:], bias[-17:], torch.bfloat16)
+        )
+        print(
+            f"[PPU INT8 selector] shape={m}x{n}x{k} selected={selected} "
+            f"name={ppu.configurations()[selected]} auto-vs-explicit-vs-compact RAW-BIT/PASS",
+            flush=True,
+        )
+    # Drop large admission tensors before continuing tiny quantizer fixtures.
+    del a, w, xs, ws, bias, auto
     # Explicit stochastic seed is an input, not a boolean or a fresh RNG seed.
     q1, s1 = ppu.quantize_int8_rowwise(x, stochastic_rounding=123)
     q2, s2 = ppu.quantize_int8_rowwise(x, stochastic_rounding=123)

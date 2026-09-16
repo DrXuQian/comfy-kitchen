@@ -160,6 +160,7 @@ def build(output, build_dir, sdk=None, extended=False, jobs=1):
             *SOURCES,
             "api.h",
             "int8_config.hpp",
+            "int8_selector.hpp",
             "int8_dispatch.hpp",
             "int8_configs.inc",
             "int8_epilogue.hpp",

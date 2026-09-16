@@ -64,6 +64,14 @@ extern "C" const char* comfy_ppu_int8_config_name(int id) {
     default: return nullptr;
   }
 }
+extern "C" int comfy_ppu_int8_select_config(int64_t m, int64_t n, int64_t k, int dtype) {
+  if (m < 0 || n < 0 || k <= 0 || m > INT32_MAX || n > int64_t(65535) * 128 ||
+      k > 131040 || k % 32 || dtype < 0 || dtype > 2) {
+    last_error = "invalid arguments for PPU INT8 config selection";
+    return -1;
+  }
+  return comfy::ppu::default_int8_config(m, n, k, dtype);
+}
 extern "C" int comfy_ppu_int8_gemm(const ComfyPpuInt8Args* a, void* stream) {
   try {
     if (!a || a->m < 0 || a->n < 0 || a->k <= 0 || a->k % 32 ||
@@ -77,9 +85,10 @@ extern "C" int comfy_ppu_int8_gemm(const ComfyPpuInt8Args* a, void* stream) {
     if (!a->a || !a->b || !a->x_scale || !a->w_scale || !a->output ||
         reinterpret_cast<uintptr_t>(a->a) % 16 || reinterpret_cast<uintptr_t>(a->b) % 16)
       throw std::invalid_argument("missing/unaligned INT8 operand");
-    // Conservative starting point, NOT a measured PPU winner. Explicit IDs allow
-    // device sweep without changing quantization, storage or operation order.
-    const int id = a->config < 0 ? (a->m < 128 ? 0 : 1) : a->config;
+    // The C ABI and Python facade consume this same native selector. Explicit
+    // config IDs always win, including controls in the expanded sweep.
+    const int id = a->config < 0
+        ? comfy::ppu::default_int8_config(a->m, a->n, a->k, a->dtype) : a->config;
     if (cute::ceil_div(a->n, int64_t(128)) > 65535)
       throw std::invalid_argument("N exceeds the supported grid.y extent");
     return dispatch_dtype(a->dtype, id, a, stream);

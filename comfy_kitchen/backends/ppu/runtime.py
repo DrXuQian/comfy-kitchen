@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Versioned C ABI; no nanobind, ATen, or PyTorch C++ ABI dependency."""
 
-import ctypes as C
-from functools import lru_cache
+import ctypes as C  # noqa: N812 - C ABI declarations use a short ctypes namespace.
+import operator
 import os
+from functools import lru_cache
 from pathlib import Path
 
 import torch
@@ -79,6 +80,11 @@ def library():
         C.POINTER(C.c_int),
         C.POINTER(C.c_int),
     ]
+    # ABI layout is unchanged. Old libraries may still run explicit sweep IDs,
+    # but cannot silently pretend to implement the new automatic selector.
+    if hasattr(lib, "comfy_ppu_int8_select_config"):
+        lib.comfy_ppu_int8_select_config.argtypes = [C.c_int64, C.c_int64, C.c_int64, C.c_int]
+        lib.comfy_ppu_int8_select_config.restype = C.c_int
     return lib
 
 
@@ -92,6 +98,43 @@ def configurations():
     return [
         lib.comfy_ppu_int8_config_name(i).decode() for i in range(lib.comfy_ppu_int8_config_count())
     ]
+
+
+def select_config(m, n, k, dtype=torch.bfloat16):
+    """Query the actual compiled native policy; no GPU launch or tuning."""
+    if dtype not in DTYPES:
+        raise ValueError("output must be fp32/fp16/bf16")
+    lib = library()
+    if not hasattr(lib, "comfy_ppu_int8_select_config"):
+        raise RuntimeError(
+            "PPU library predates the measured selector; install the updated PPU wheel "
+            "or rebuild. Explicit config IDs remain available for old sweep binaries."
+        )
+    config = lib.comfy_ppu_int8_select_config(m, n, k, DTYPES[dtype])
+    if config < 0:
+        raise ValueError(lib.comfy_ppu_last_error().decode("utf-8", errors="replace"))
+    return config
+
+
+@lru_cache(maxsize=1)
+def _config_ids_by_name():
+    return {name: index for index, name in enumerate(configurations())}
+
+
+def resolve_config(config, m, n, k, dtype=torch.bfloat16):
+    """Explicit argument > environment > native shape-family fallback."""
+    requested = os.environ.get("COMFY_KITCHEN_PPU_INT8_CONFIG", "-1") if config is None else config
+    try:
+        index = int(requested) if isinstance(requested, str) else operator.index(requested)
+    except (TypeError, ValueError):
+        if not isinstance(requested, str) or requested not in _config_ids_by_name():
+            raise ValueError(f"unknown PPU INT8 config: {requested!r}") from None
+        return _config_ids_by_name()[requested]
+    if index == -1:
+        return select_config(m, n, k, dtype)
+    if index < 0:
+        raise ValueError(f"unknown PPU INT8 config: {requested!r}")
+    return index  # Native ABI validates that the ID exists in this binary.
 
 
 def resources(config, dtype=torch.bfloat16):
