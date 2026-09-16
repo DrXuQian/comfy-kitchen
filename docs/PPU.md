@@ -2,11 +2,11 @@
 
 ## Installable PPU wheel
 
-Wheel publication targets a separate `ppu-wheels` artifact branch, not `main`.
-**Publication is currently blocked:** GitHub rejected the new LFS object with
-`can not upload new objects to public fork DrXuQian/comfy-kitchen`.
-The wheel is locally built and installation-tested, but is not yet downloadable
-from that branch. Its exact filename is
+The SDK-built wheel is published on the independent
+[`ppu-wheels` artifact branch](https://github.com/DrXuQian/comfy-kitchen/tree/ppu-wheels)
+at `defb4a7`. It is an ordinary Git blob (no LFS required); `main` contains only
+source. The branch includes `release.json` and a checksum-verifying `install.sh`.
+Its exact filename is
 `comfy_kitchen-0.2.34-2ppu20260916-cp312-abi3-linux_x86_64.whl`, SHA256
 `c044b823148e0a9e1b455ec5172ead1235382236de2c3f52578ab17e32e98247`.
 
