@@ -2,8 +2,15 @@
 
 ## Installable PPU wheel
 
-The `ppu-wheels` artifact branch carries the SDK-built wheel via Git LFS;
-`main` remains the source branch. The wheel contains the seven-config product
+Wheel publication targets a separate `ppu-wheels` artifact branch, not `main`.
+**Publication is currently blocked:** GitHub rejected the new LFS object with
+`can not upload new objects to public fork DrXuQian/comfy-kitchen`.
+The wheel is locally built and installation-tested, but is not yet downloadable
+from that branch. Its exact filename is
+`comfy_kitchen-0.2.34-2ppu20260916-cp312-abi3-linux_x86_64.whl`, SHA256
+`c044b823148e0a9e1b455ec5172ead1235382236de2c3f52578ab17e32e98247`.
+
+The wheel contains the seven-config product
 library, not the 285-config diagnostic sweep. Its native C ABI does not link
 against Torch C++; the handoff environment is Python 3.12 / Torch 2.9 / PPU0010.
 Set `LD_LIBRARY_PATH` to the matching PPU SDK `lib` directory at runtime.
