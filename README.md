@@ -2,6 +2,10 @@
 
 Fast kernel library for Diffusion inference with multiple compute backends.
 
+PPU fork: [INT8 linear backend, build and validation instructions](docs/PPU.md)
+(actlize AIU + fused scale/bias). Device correctness and performance remain
+subject to the box admission script; the original backends are retained.
+
 ## Backend Capabilities Matrix
 
 | Function                    | eager | cuda | triton | hip |

@@ -17,10 +17,14 @@
 
 #pragma once
 
+#if defined(COMFY_KITCHEN_PPU)
+#include "../ppu/runtime_compat.cuh"
+#else
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
+#endif
 #include <stdexcept>
 #include <string>
 
@@ -216,4 +220,3 @@ inline cudaDataType_t dtype_code_to_cuda_type(int dtype_code) {
             return __VA_ARGS__();                                               \
         }                                                                       \
     }()
-

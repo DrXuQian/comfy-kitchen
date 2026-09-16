@@ -22,6 +22,7 @@ from setuptools.command.build_ext import build_ext
 # This needs to happen before get_extensions() is called
 # Usage: python setup.py install --no-cuda
 BUILD_NO_CUDA = False
+BUILD_PPU = os.getenv("COMFY_KITCHEN_BUILD_PPU") == "1"
 if "--no-cuda" in sys.argv:
     BUILD_NO_CUDA = True
     sys.argv.remove("--no-cuda")  # Remove so setuptools doesn't complain
@@ -105,6 +106,14 @@ class CMakeBuildExt(build_ext):
 
 
     def run(self):
+        if BUILD_PPU:
+            # PPU is an explicit source-graph opt-in. Never configure NVIDIA
+            # CUDA/CUTLASS, FP8/FP4, FlashAttention or HIP in this build.
+            import runpy
+            builder = runpy.run_path(str(pathlib.Path(__file__).parent / "tools/build_ppu.py"))
+            for ext in self.extensions:
+                builder["build"](self.get_ext_fullpath(ext.name), self.build_temp)
+            return
         try:
             subprocess.run(["cmake", "--version"], check=True, capture_output=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
@@ -688,6 +697,10 @@ def setup_cuda_extension() -> CMakeExtension | None:
 
 
 def get_extensions() -> list[setuptools.Extension]:
+    if BUILD_PPU:
+        if BUILD_HIP or BUILD_NO_CUDA:
+            raise RuntimeError("PPU build cannot be combined with --hip or --no-cuda")
+        return [Extension("comfy_kitchen.backends.ppu._native", sources=[])]
     extensions = []
 
     if not BUILD_NO_CUDA:

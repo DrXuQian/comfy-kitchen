@@ -17,12 +17,16 @@
 #ifndef COMFY_UTILS_CUH_
 #define COMFY_UTILS_CUH_
 
+#if defined(COMFY_KITCHEN_PPU)
+#include "../ppu/runtime_compat.cuh"
+#else
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_fp8.h>
 #if CUDA_VERSION >= 12080
 #include <cuda_fp4.h>
+#endif
 #endif
 
 #include <type_traits>

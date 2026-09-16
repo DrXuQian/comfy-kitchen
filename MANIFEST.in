@@ -1,2 +1,9 @@
 include comfy_kitchen/backends/hip/CMakeLists.txt
 recursive-include comfy_kitchen/backends/hip *.cpp *.h *.hip *.in *.json
+include tools/build_ppu.py
+recursive-include comfy_kitchen/backends/ppu *.h *.hpp *.cuh *.cu *.inc
+include comfy_kitchen/backends/cuda/ops/int8_linear.cu
+include comfy_kitchen/backends/cuda/utils.cuh
+include comfy_kitchen/backends/cuda/dtype_dispatch.cuh
+include comfy_kitchen/backends/cuda/input_act_codes.h
+recursive-include third_party/actlize/include *.h *.hpp *.inl *.inc
