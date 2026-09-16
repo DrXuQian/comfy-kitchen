@@ -59,7 +59,8 @@ exclude = ["tests*"]
 [tool.setuptools.package-data]
 "comfy_kitchen.backends.cuda" = ["*.cuh", "*.h"]
 "comfy_kitchen.backends.hip" = ["architectures.json"]
-"comfy_kitchen.backends.ppu" = ["*.so.json"]
+# PPU build_ext writes the matching .so.json beside its new library in build_lib.
+# Do not glob source-tree manifests: an old in-place build is not this wheel.
 
 [tool.ruff]
 # Set the maximum line length to 100.

@@ -1,5 +1,23 @@
 # PPU INT8 backend
 
+## Installable PPU wheel
+
+The `ppu-wheels` artifact branch carries the SDK-built wheel via Git LFS;
+`main` remains the source branch. The wheel contains the seven-config product
+library, not the 285-config diagnostic sweep. Its native C ABI does not link
+against Torch C++; the handoff environment is Python 3.12 / Torch 2.9 / PPU0010.
+Set `LD_LIBRARY_PATH` to the matching PPU SDK `lib` directory at runtime.
+The generated `.so.json` inside the wheel binds the actual payload SHA256,
+source hashes, actlize commit, compiler and link command. A source-tree manifest
+from an old in-place build is not package data.
+
+Install the downloaded wheel with `python -m pip install --no-deps --force-reinstall
+<wheel>`. Check imports from **outside this source checkout**, e.g. `/workspace`,
+so the checkout cannot shadow the installed wheel. Unset
+`COMFY_KITCHEN_PPU_LIBRARY` when testing the installed native library; keep that
+override only when intentionally running the separate expanded sweep binary.
+Compile/link and CPU policy checks are not a fresh device verdict for the wheel.
+
 ## Automatic selector and fallback
 
 The PPU **product library now contains seven configs**. The original IDs 0..5
@@ -131,7 +149,7 @@ COMFY_KITCHEN_PPU_LIBRARY=/workspace/<expanded-run>/_native.so \
 
 Each shape screens **all 285 configs**, both roles, with 3 samples x 3 launches.
 Fresh interleaved confirmation uses 7 samples x 20 launches for the top eight
-per role **plus** current product fallback config1, old six-row winner config5,
+per role **plus** previous product fallback config1, old six-row winner config5,
 and the 4096-cube winner (selected by coordinates, not by fragile ID94).
 Controls do not prune the competition. All raw outputs are byte-compared against
 config0 on device outside timing; an independent sampled CPU-int64 oracle remains.
