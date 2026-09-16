@@ -2,16 +2,16 @@
 """Device admission for PPU INT8 linear (all configs, not just default)."""
 
 import hashlib
-from pathlib import Path
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
+from ppu_int8_admission import device_limits, resource_reason
 
 import comfy_kitchen as ck
 from comfy_kitchen.backends import ppu
-from ppu_int8_admission import device_limits, resource_reason
 
 
 def row_oracle(x):
@@ -36,11 +36,17 @@ def oracle(a, w, xs, ws, bias, dtype):
 
 
 def assert_bits(got, want):
-    got, want = got.cpu().contiguous(), want.cpu().contiguous()
-    bad = (got.view(torch.uint8) != want.view(torch.uint8)).sum().item()
-    if bad:
+    if got.shape != want.shape or got.dtype != want.dtype:
+        raise AssertionError("raw comparison requires identical shape and dtype")
+    # Large-M outputs can exceed 1 GiB. Compare every byte where the output
+    # already resides, outside timing, instead of copying both tensors to CPU
+    # after every candidate. A sampled CPU-int64 oracle remains independent.
+    got, want = got.contiguous(), want.to(device=got.device).contiguous()
+    actual_bytes, expected_bytes = got.view(torch.uint8), want.view(torch.uint8)
+    if not torch.equal(actual_bytes, expected_bytes):
+        bad = (actual_bytes != expected_bytes).sum().item()
         raise AssertionError(
-            f"raw byte mismatch: {bad}; max_abs={(got.float()-want.float()).abs().max().item()}"
+            f"raw byte mismatch: {bad}; max_abs={(got.float() - want.float()).abs().max().item()}"
         )
 
 

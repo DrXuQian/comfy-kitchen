@@ -1,5 +1,78 @@
 # PPU INT8 backend
 
+## Multi-shape heuristic experiment (reuse the expanded binary)
+
+The 4096-cube expanded sweep admitted `64x256x128_w64x32_s2` on the user's
+72-CU PPU: core **208.960 us / 657.729 TOPS / 65.77%** of the declared
+1000 INT8 TOPS peak; quant+core **289.366 us**. Both fresh-confirmation winners
+were resolved in that 285-row space. This does **not** establish a global
+fallback for all shapes. Product defaults remain unchanged pending this experiment.
+
+Run eight controlled shapes without recompiling the library:
+
+```bash
+git pull --ff-only
+COMFY_KITCHEN_PPU_LIBRARY=/workspace/comfy-kitchen-ppu-e39b8c70-20260916T055334Z-63522/_native.so \
+  bash tools/run_ppu_int8_shape_sweep_box.sh
+```
+
+The SDK defaults to `/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK`; override `PPU_SDK`
+if needed. Set `COMFY_KITCHEN_PPU_LIBRARY` to the exact expanded library that
+passed the box sweep; its adjacent `_native.so.json` manifest is required.
+No build, backend installation, or implicit fallback occurs in this runner.
+
+| M | N | K | Question |
+|---:|---:|---:|---|
+| 4096 | 4096 | 4096 | Repeat the admitted cube control |
+| 16384 | 4096 | 4096 | Increase M only |
+| 73774 | 4096 | 4096 | Large M, including a real tile tail |
+| 73774 | 8192 | 4096 | Increase output width N only |
+| 73774 | 4096 | 8192 | Increase reduction depth K only |
+| 73774 | 8192 | 8192 | Both N and K large |
+| 73774 | 16384 | 4096 | Wide-output/expansion probe |
+| 73774 | 4096 | 16384 | Long-K/contraction probe |
+
+These are **synthetic heuristic probes, not a verified MiniMax H3 layer list**.
+73774 is the previously reported sequence length; the actual linear-layer
+N/K (and whether its flattened M is that sequence length) still need call-shape
+evidence. Attention head count/dimension alone cannot establish all linear shapes.
+Custom shapes can be supplied without editing code or recompiling:
+
+```bash
+COMFY_KITCHEN_PPU_LIBRARY=/workspace/<expanded-run>/_native.so \
+  bash tools/run_ppu_int8_shape_sweep_box.sh --shapes 16384,4096,4096 73774,8192,8192
+```
+
+Each shape screens **all 285 configs**, both roles, with 3 samples x 3 launches.
+Fresh interleaved confirmation uses 7 samples x 20 launches for the top eight
+per role **plus** current product fallback config1, old six-row winner config5,
+and the 4096-cube winner (selected by coordinates, not by fragile ID94).
+Controls do not prune the competition. All raw outputs are byte-compared against
+config0 on device outside timing; an independent sampled CPU-int64 oracle remains.
+This avoids copying gigabyte outputs back to CPU after every timing batch.
+Timing still uses the public API, warm/reused allocations, with launch idle included.
+Overlapping envelopes remain UNRESOLVED, including overlap with an unconfirmed row.
+Lower-cost screening is not itself a statistically established winner.
+
+The runner is sequential, retains per-shape logs/raw JSON, and writes `summary.md`
+plus **`shape-summary.json` (upload this single file)** containing all samples and
+identities. Missing candidates, changed binary/device/runtime, numerical failures,
+or missing controls fail the suite; resource SKIPs retain their reasons.
+No result is installed into the selector automatically.
+
+Local validation for this runner: **24 orchestration/comparison contracts pass**,
+including missing/duplicate candidates, wrong binary/shape/device, missing
+confirmation controls, and a changed last output byte or signed zero. The wider
+CPU suite reports **101 PASS / 13 backend/environment SKIP / 0 FAIL**. Shell
+syntax, dry-run, real existing 285-row library/manifest binding, and formatting
+also pass. These are not new PPU numerical or timing measurements.
+
+Use the result to test, not assume, a shape heuristic: compare fallback and cube
+winner regrets separately for core and quant+core, inspect tile/warp/stage and
+occupancy changes, and retain unresolved ties. A future heuristic needs held-out
+shapes before claiming generalization; unknown shapes keep a documented safe
+fallback rather than running an undisclosed full sweep on ComfyUI's first frame.
+
 ## Expanded INT8 sweep (opt-in, product defaults unchanged)
 
 ```bash
@@ -41,9 +114,11 @@ Local validation: all 34 compilation units and the real shared-library link
 passed with SDK 2.1.1; loading reports all 285 names/IDs exactly. The full-table
 host proof passed **202,111,692** output checks across three dtypes; duplicate
 owner and incorrect scale negative controls failed as intended. The original
-six-row build/link and **4,144,488** host checks also passed. CPU contracts:
-**77 PASS / 4 environment/device SKIP**. Device correctness/performance of the
-new rows remains for the box script; none is claimed here.
+six-row build/link and **4,144,488** host checks also passed. Original CPU contracts:
+**77 PASS / 4 environment/device SKIP**. The subsequently returned 4096-cube
+device sweep at `e39b8c7` measured all 285 rows, both roles, with zero resource
+SKIPs; its fresh-confirmation winner is recorded above. The new large-M shapes
+remain unmeasured until the multi-shape box run returns.
 
 ## Vendor Lt comparison (benchmark only)
 

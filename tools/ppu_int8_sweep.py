@@ -5,19 +5,20 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import random
 import statistics
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import torch
-from comfy_kitchen.backends import ppu
-from ppu_int8_check import assert_bits, oracle
 from ppu_int8_admission import device_limits, resource_reason
+from ppu_int8_check import assert_bits, oracle
+
+from comfy_kitchen.backends import ppu
 
 
 def measure(fn, warmup, samples, iterations):
@@ -57,13 +58,39 @@ def main():
         default=0,
         help="Fresh interleaved confirmation of top N plus legacy config5, per role",
     )
+    p.add_argument("--confirm-samples", type=int, help="Default: same as --samples")
+    p.add_argument("--confirm-iterations", type=int, help="Default: same as --iterations")
+    p.add_argument(
+        "--confirm-config",
+        action="append",
+        default=[],
+        metavar="CONFIG_NAME",
+        help="Also confirm this coordinate name, even outside the screened top N",
+    )
     p.add_argument(
         "--peak-tops", type=float, help="Optional calibrated INT8 peak (not fp16 TFLOPS)"
     )
     p.add_argument("--out", default="/workspace/comfy-kitchen-ppu-sweep")
     args = p.parse_args()
-    if min(args.m, args.n, args.k, args.samples, args.iterations) <= 0:
+    if args.confirm_samples is None:
+        args.confirm_samples = args.samples
+    if args.confirm_iterations is None:
+        args.confirm_iterations = args.iterations
+    if (
+        min(
+            args.m,
+            args.n,
+            args.k,
+            args.samples,
+            args.iterations,
+            args.confirm_samples,
+            args.confirm_iterations,
+        )
+        <= 0
+    ):
         p.error("extents/samples/iterations must be positive")
+    if args.confirm_config and not args.confirm_top:
+        p.error("--confirm-config requires --confirm-top")
     if (
         args.warmup < 0
         or args.confirm_top < 0
@@ -72,6 +99,11 @@ def main():
         p.error("warmup must be nonnegative and peak TOPS positive")
     if not ppu.runtime.is_ppu_device("cuda:0"):
         raise RuntimeError("PPU required; no performance result")
+    names = ppu.configurations()
+    for name in args.confirm_config:
+        if name not in names:
+            raise RuntimeError(f"confirmation config absent from loaded binary: {name}")
+    controls = {5, *(names.index(name) for name in args.confirm_config)}
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
     # Never overwrite a prior run's measurements.
@@ -95,7 +127,6 @@ def main():
         bias[cols.to(bias.device)],
         dtype,
     )
-    names = ppu.configurations()
     order = list(range(len(names)))
     random.Random(901).shuffle(order)
     metadata = {
@@ -185,13 +216,14 @@ def main():
         for role in ("prequantized-core", "quant+core"):
             ranked = sorted((r for r in results if r["role"] == role), key=lambda r: r["median_us"])
             selected = ranked[: args.confirm_top]
-            control = next((r for r in ranked if r["config"] == 5), None)
-            if control is not None and control not in selected:
-                selected.append(control)
+            for config in sorted(controls):
+                control = next((r for r in ranked if r["config"] == config), None)
+                if control is not None and control not in selected:
+                    selected.append(control)
             if len(selected) < 2:
                 raise RuntimeError("confirmation needs at least two configs")
             timings = {r["config"]: [] for r in selected}
-            for round_id in range(args.samples):
+            for round_id in range(args.confirm_samples):
                 configs = list(timings)
                 rng.shuffle(configs)
                 for config in configs:
@@ -201,11 +233,11 @@ def main():
                         if role == "prequantized-core"
                         else (lambda: ppu.int8_linear(x, w, ws, bias, dtype, convrot=args.convrot))
                     )
-                    stats, last = measure(fn, args.warmup, 1, args.iterations)
+                    stats, last = measure(fn, args.warmup, 1, args.confirm_iterations)
                     assert_bits(last, anchor)
                     timings[config].extend(stats["samples_us"])
                 print(
-                    f"[PPU INT8 confirm] role={role} round={round_id+1}/{args.samples} candidates={len(configs)}",
+                    f"[PPU INT8 confirm] role={role} round={round_id + 1}/{args.confirm_samples} candidates={len(configs)}",
                     flush=True,
                 )
             for original in selected:
@@ -254,7 +286,7 @@ def main():
         print("[PPU INT8 winner] " + role + " " + json.dumps(winners[role]), flush=True)
     save(complete=True, winners=winners)
     print(
-        f"[PPU INT8 denominator] candidates={len(names)} measured={len(results)//2} resource_SKIP={len(skips)} FAIL=0",
+        f"[PPU INT8 denominator] candidates={len(names)} measured={len(results) // 2} resource_SKIP={len(skips)} FAIL=0",
         flush=True,
     )
     print(f"artifacts: {result_path}")
