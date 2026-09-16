@@ -1,5 +1,59 @@
 # PPU INT8 backend
 
+## Vendor Lt comparison (benchmark only)
+
+On PPU, the vendor Lt library is SDK `libacblasLt.so` / `acblasLtMatmul`,
+not NVIDIA's `libcublasLt.so`. Run the same 4096x4096x4096 BF16-output workload:
+
+```bash
+git pull --ff-only
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+  M=4096 N=4096 K=4096 DTYPE=bf16 CONVROT=1 PEAK_TOPS=1000 \
+  bash tools/run_ppu_blaslt_box.sh
+```
+
+To reuse an already validated `_native.so`, additionally set `BUILD=0` and
+`COMFY_KITCHEN_PPU_LIBRARY=/workspace/<prior-PASS-run>/_native.so`. The small Lt
+benchmark bridge is still built separately. Shipping kernels/configs are unchanged.
+
+The script requests 32 heuristics (`HEURISTICS`, maximum 256), allows 64 MiB
+workspace (`WORKSPACE_MIB`), and also measures the library's default algorithm.
+This is **not an exhaustive search of every vendor configuration**. A vendor
+NOT_SUPPORTED is reported as SKIP; no valid candidate gives rc=2, never PASS.
+Numerical/runtime failures remain FAIL, not SKIP. No fallback to FP16 GEMM.
+
+Three main rows are kept separate:
+
+- `acblaslt-int32-only-DIAGNOSTIC`: INT8 x INT8 -> INT32; **not** equivalent to our output contract.
+- `acblaslt-scale-bias`: that GEMM plus one fused elementwise scale/bias/cast kernel.
+- `actlize-fused`: existing INT8 GEMM with scale/bias/cast fused into its epilogue.
+
+Only the last two participate in the winner comparison. The separate scale kernel
+is a benchmark implementation, **not a claim that no vendor fused path exists**.
+All three use identical input bytes, warm allocations, the same current stream,
+and preallocated outputs. Activation quantization/ConvRot is untimed. The TN view
+is zero-copy: column-major `Y^T[N,M] = W^T[K,N]^T * A^T[K,M]`; no hidden repack.
+Before timing, an independent full CPU-int64 non-square test checks descriptor
+orientation and epilogue; the target shape checks all output bits against our
+admitted config0 and sampled INT32 accumulators against CPU-int64. Negative
+controls transpose the output and omit row scales; both must be detected.
+
+Fresh interleaved confirmation compares each backend's measured winner. Overlap
+of sample envelopes means UNRESOLVED. The output includes raw samples, latency,
+TOPS and utilization using the **user-declared 1000 dense INT8 TOPS** denominator,
+not ACU SOL. An epilogue-only timing and an original-public-API control are separate
+diagnostics; do not add separate medians to derive the complete path's time.
+The full JSON and log are saved under `/workspace/comfy-kitchen-blaslt-...`, with
+repo SHA, loaded binary hashes (including the actual Lt library), device/runtime,
+input fingerprint and returned algorithm identities. Local compile/tests do not
+claim a PPU device or performance result.
+
+Local validation: SDK 2.1.1 real device compilation + `-z defs` multi-library link,
+native bridge loading and vendor version query (1400), plus CPU contracts and
+negative controls. This SDK's Lt requires `GLIBCXX_3.4.32`; on this development
+host loading was checked with an existing isolated newer glibc/libstdc++ runtime,
+not by replacing system libraries. The box needs a compatible host C++ runtime.
+
 This fork adds **INT8 linear only**, without replacing the NVIDIA/HIP backends or
 requiring model weight repacking. It is not a port of every comfy-kitchen op.
 
