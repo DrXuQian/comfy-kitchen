@@ -118,6 +118,26 @@ PPU speedup, high MFU or equivalence to the user's installed original binary**.
 These remain box verdicts. The box script is fail-closed on numeric failures.
 The underlying integer MMA/AIU and runtime stream ordering are device boundaries.
 
+### SDK 2.1.1 runtime loader correction
+
+The SDK ships `libhggcrt1.so -> libhggcrt.13.0.so`, but its
+`libhggc_wrapper.so` still explicitly dlopens `libhggcrt.12.0.so` during module
+registration. The initial build accidentally linked the wrapper first. This
+caused the reported load failure before any correctness test launched.
+
+The build now links the same SDK's **native runtime directly**, and checks ELF
+dependencies to reject wrapper linkage. The C-only loader uses local deep binding
+so an already-global wrapper cannot interpose its stale lookup. No runtime
+symlinks, SDK file changes, old-library download, or CUDA facade changes are
+needed. Pull and rebuild; the original wrapper-linked binary is not corrected
+by a Python-only update.
+
+The exact old binary reproduces `cannot open ... libhggcrt.12.0.so` locally.
+Relinking the same two objects to the native runtime passes real SDK module
+registration / ABI checks, including with the old wrapper preloaded globally.
+This check launches no device work. On this host it uses an isolated compatible
+glibc/libstdc++ loader; no fake driver or launch-skip environment is involved.
+
 Initial local validation (2026-09-16, SDK 2.1.1):
 
 - Native shared library and the `setup.py build_ext` installation path both

@@ -45,7 +45,13 @@ def is_ppu_device(device):
 
 @lru_cache(maxsize=1)
 def library():
-    lib = C.CDLL(str(library_path()))
+    # A globally loaded SDK wrapper (e.g. via torch) can interpose even our
+    # versioned HGGC references. This library exchanges only pointers/scalars
+    # through a C ABI, so bind its private SDK dependency before global shims.
+    # No Python/ATen/C++ objects cross this boundary.
+    if not hasattr(os, "RTLD_DEEPBIND"):
+        raise RuntimeError("PPU C-ABI loader requires Linux RTLD_DEEPBIND")
+    lib = C.CDLL(str(library_path()), mode=os.RTLD_NOW | os.RTLD_LOCAL | os.RTLD_DEEPBIND)
     lib.comfy_ppu_abi_version.restype = C.c_int
     if lib.comfy_ppu_abi_version() != 1:
         raise RuntimeError("unsupported comfy PPU native ABI")

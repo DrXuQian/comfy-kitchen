@@ -9,12 +9,41 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ("int8_gemm.cu", "quantize.cu")
+
+
+def link_command(cxx, objects, sdk, output):
+    # HGGC's native runtime exports every symbol used by these objects. The
+    # 2.1.1 wrapper still dlopens libhggcrt.12.0.so, although the SDK's own
+    # libhggcrt1.so resolves to SONAME 13.0. Never involve that dispatch shim.
+    return [
+        cxx,
+        "-shared",
+        "-Wl,-z,defs",
+        *objects,
+        f"-Wl,-rpath,{sdk / 'lib'}",
+        str(sdk / "lib/libhggcrt1.so"),
+        str(sdk / "lib/libhggc.so"),
+        "-ldl",
+        "-o",
+        str(output),
+    ]
+
+
+def check_native_linkage(output):
+    dynamic = subprocess.check_output(["readelf", "-d", str(output)], text=True)
+    needed = re.findall(r"\(NEEDED\).*?\[(.*?)\]", dynamic)
+    if any("wrapper" in name for name in needed):
+        raise RuntimeError(f"PPU extension must not depend on a runtime wrapper: {needed}")
+    if not any(name.startswith("libhggcrt") for name in needed):
+        raise RuntimeError(f"PPU extension has no direct native runtime dependency: {needed}")
+    return needed
 
 
 def git_output(arguments, directory):
@@ -70,24 +99,11 @@ def build(output, build_dir, sdk=None):
     cxx = shutil.which(os.environ.get("CXX", "g++"))
     if not cxx:
         raise RuntimeError("host C++ linker not found")
-    command = [
-        cxx,
-        "-shared",
-        "-Wl,-z,defs",
-        *objects,
-        f"-L{sdk / 'lib'}",
-        f"-Wl,-rpath,{sdk / 'lib'}",
-        "-lhggc_wrapper",
-        "-lhggcrt1",
-        "-lhggc",
-        "-lhg_wrapper",
-        "-ldl",
-        "-o",
-        str(output),
-    ]
+    command = link_command(cxx, objects, sdk, output)
     commands.append(command)
     print(shlex.join(command), flush=True)
     subprocess.run(command, check=True)
+    needed = check_native_linkage(output)
     manifest = {
         "schema": 1,
         "scope": "COMPILE_AND_LINK_ONLY_NO_DEVICE_VERDICT",
@@ -98,6 +114,7 @@ def build(output, build_dir, sdk=None):
         "worktree_status": git_output(["status", "--porcelain"], ROOT),
         "actlize_sha": git_output(["rev-parse", "HEAD"], actlize.parent),
         "binary_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+        "runtime_linkage": {"mode": "direct-native-HGGC", "elf_needed": needed},
     }
     inputs = [
         ROOT / "comfy_kitchen/backends/ppu" / name

@@ -85,3 +85,62 @@ def test_missing_explicit_library_fails(monkeypatch):
 def test_int32_bound_is_conservative():
     assert 131040 * 128 * 128 <= 2**31 - 1
     assert 131072 * 128 * 128 > 2**31 - 1
+
+
+def test_link_command_uses_native_sdk_not_wrapper():
+    root = Path(__file__).resolve().parents[1]
+    builder = runpy.run_path(str(root / "tools/build_ppu.py"))
+    command = builder["link_command"]("g++", ["a.o", "b.o"], Path("/sdk"), Path("out.so"))
+    assert "/sdk/lib/libhggcrt1.so" in command
+    assert "/sdk/lib/libhggc.so" in command
+    assert not any("wrapper" in word for word in command)
+    assert "-Wl,-z,defs" in command
+
+
+def test_linkage_gate_rejects_the_actual_bad_dependency(monkeypatch):
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    check = runpy.run_path(str(root / "tools/build_ppu.py"))["check_native_linkage"]
+    monkeypatch.setattr(
+        subprocess,
+        "check_output",
+        lambda *a, **k: "0x1 (NEEDED) Shared library: [libhggc_wrapper.so]\n",
+    )
+    with pytest.raises(RuntimeError, match="must not depend"):
+        check("out.so")
+    monkeypatch.setattr(
+        subprocess,
+        "check_output",
+        lambda *a, **k: "0x1 (NEEDED) Shared library: [libhggcrt.13.0.so]\n",
+    )
+    assert check("out.so") == ["libhggcrt.13.0.so"]
+
+
+def test_c_abi_loader_prefers_native_dependencies(monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    names = (
+        "comfy_ppu_last_error",
+        "comfy_ppu_int8_gemm",
+        "comfy_ppu_quantize_int8",
+        "comfy_ppu_int8_config_name",
+        "comfy_ppu_int8_resources",
+    )
+    fake = SimpleNamespace(**{name: (lambda *args: 0) for name in names})
+    fake.comfy_ppu_abi_version = lambda: 1
+    calls = []
+
+    def load(path, mode):
+        calls.append(mode)
+        return fake
+
+    monkeypatch.setattr(runtime, "library_path", lambda: Path("/test-only-native.so"))
+    monkeypatch.setattr(ctypes, "CDLL", load)
+    runtime.library.cache_clear()
+    try:
+        assert runtime.library() is fake
+        assert calls == [os.RTLD_NOW | os.RTLD_LOCAL | os.RTLD_DEEPBIND]
+    finally:
+        runtime.library.cache_clear()
