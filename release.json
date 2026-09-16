@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "package": "comfy-kitchen",
+  "version": "0.2.34",
+  "wheel": "comfy_kitchen-0.2.34-2ppu20260916-cp312-abi3-linux_x86_64.whl",
+  "wheel_sha256": "c044b823148e0a9e1b455ec5172ead1235382236de2c3f52578ab17e32e98247",
+  "source_sha": "6d8adcbba1f23027a96e705c7fb7cca0e1031ce2",
+  "native_sha256": "4b3dfb92ee98f3072033430717c18cba50fa569c45c4f5d40329d450e2d6b034",
+  "actlize_sha": "423253c00df333ead6fb72ea623d526f24f56b5a",
+  "sdk": "hgcc 2.1.1-a5c56e, PPU0010",
+  "storage": "ordinary Git on dedicated artifact branch; no LFS",
+  "scope": "Seven-config product library; SDK compiled+linked; new wheel device NOT RUN",
+  "handoff_environment": "Python 3.12, Torch 2.9.0; native ABI itself does not link Torch C++",
+  "local_checks": [
+    "109 CPU PASS / 13 backend-environment SKIP / 0 FAIL",
+    "4735908 actual CuTe/epilogue ownership cells pass; planted map errors fail",
+    "SDK build and link of seven configs x three output dtypes",
+    "wheel has one native library and one matching manifest; all native source hashes match source_sha",
+    "pip --target installation and installed Python-to-native selector queries"
+  ]
+}
